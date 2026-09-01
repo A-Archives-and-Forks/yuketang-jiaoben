@@ -1962,12 +1962,12 @@ ${ocrText}
         }
       }
 
-      if (location.href !== returnUrl) {
-        location.href = returnUrl;
-      } else {
-        history.back();
-      }
-      return true;
+      // if (location.href !== returnUrl) {
+      //   location.href = returnUrl;
+      // } else {
+      //   history.back();
+      // }
+      // return true;
     }
 
     async handleMedia(route) {
@@ -2170,8 +2170,9 @@ ${ocrText}
       } else if (route.type === 'exercise') {
         ok = await this.handleExercise(route);
       } else {
-        this.panel.log(`当前类型为 ${route.type}，最小方案暂不自动处理`);
-        return;
+        this.panel.log(`当前类型为 ${route.type}，当前暂不自动处理此类型，自动跳过`);
+        await Utils.sleep(2000);
+        ok = true;
       }
       if (!ok) return;
       await this.returnToSource();
@@ -2180,6 +2181,7 @@ ${ocrText}
 
   // ---- 路由 ----
   function start() {
+    // ---- ai-workspace获取课程根目录信息并保存（处理完一个课程重定向到根目录） ----
     const classroomId = Utils.getCurrentClassroomId();
     const returnUrl = location.pathname.includes('/v2/web/studentLog/') ? location.href : '';
     Store.setPendingAutoStart(classroomId, returnUrl);
@@ -2189,6 +2191,7 @@ ${ocrText}
       new AiWorkspaceRunner(panel).run();
       return;
     }
+    // ---- ai-workspace end
     const url = location.host;
     const path = location.pathname.split('/');
     const matchURL = `${url}${path[0]}/${path[1]}/${path[2]}`;
