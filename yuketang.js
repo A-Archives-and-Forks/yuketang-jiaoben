@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         雨课堂刷课助手
 // @namespace    http://tampermonkey.net/
-// @version      3.0.5
+// @version      3.0.6
 // @description  针对雨课堂视频进行自动播放，配置AI自动答题
 // @author       风之子
 // @license      GPL3
@@ -30,7 +30,7 @@
 
   // ---- 脚本配置，用户可修改 ----
   const Config = {
-    version: '3.0.5',     // 版本号
+    version: '3.0.6',     // 版本号
     playbackRate: 2,      // 视频播放倍速
     pptInterval: 3000,    // ppt翻页间隔
     storageKeys: {        // 使用者勿动
@@ -92,7 +92,14 @@
       const path = location.pathname;
       return path.match(/^\/ai-workspace\/lms-graph\/([^/]+)/)?.[1]
         || path.match(/^\/v2\/web\/studentLog\/([^/]+)/)?.[1]
+        || path.match(/\/(\d+)\/studycontent$/)?.[1]
         || '';
+    },
+    returnUrl() { // 得到课程开始的url
+      if (location.pathname.includes('/v2/web/studentLog/') || location.pathname.includes('pro/lms/')) {
+        return location.href
+      }
+      return ""
     },
     isSupportedLearningPage() {
       const path = location.pathname;
@@ -241,7 +248,7 @@
     },
     clearPendingAutoStart() {
       localStorage.removeItem(Config.storageKeys.pendingAutoStart);
-    }
+    },
   };
 
   // ---- UI 面板 ----
@@ -650,6 +657,20 @@
       if (ui.info.lastElementChild) ui.info.lastElementChild.scrollIntoView({ behavior: 'smooth', block: 'end', inline: 'nearest' });
     };
 
+    const warn = message => {
+      const li = doc.createElement('li');
+      li.innerText = '⚠️警告：' + message;
+      ui.info.appendChild(li);
+      if (ui.info.lastElementChild) ui.info.lastElementChild.scrollIntoView({ behavior: 'smooth', block: 'end', inline: 'nearest' });
+    };
+
+    const error = message => {
+      const li = doc.createElement('li');
+      li.innerText = '🚨报错：' + message;
+      ui.info.appendChild(li);
+      if (ui.info.lastElementChild) ui.info.lastElementChild.scrollIntoView({ behavior: 'smooth', block: 'end', inline: 'nearest' });
+    };
+
     const defaultAI = { url: 'https://api.deepseek.com/chat/completions', key: 'sk-xxxxxxx', model: 'deepseek-chat', apiFormat: 'openai', authMethod: 'bearer' };
     const loadAIConf = () => {
       const saved = Store.getAIConf();
@@ -730,6 +751,8 @@
     return {
       ...ui,
       log,
+      warn,
+      error,
       setStartHandler(fn) {
         startHandler = fn;
         ui.btnStart.onclick = invokeStart;
@@ -1027,6 +1050,11 @@
         ...document.querySelectorAll(selectors)
       ];
       return nodes.find(el => this.isVisibleElement(el) && pattern.test(this.normalizeText(el.innerText)));
+    },
+    getAllScourse() { // 获得ai-workspace的课程列表
+      const list = document?.querySelectorAll(".nav-item-leaf-box")
+      if (!list) panel.warn("没有发现课程资源")
+      return list
     }
   };
 
@@ -1927,14 +1955,32 @@ ${ocrText}
       return AiWorkspace.normalizeText(active?.innerText || '');
     }
 
+    // 获取要跳转回去的目标地址
     getReturnUrl() {
       const pending = Store.getPendingAutoStart();
       const route = AiWorkspace.getRoute();
       if (!pending || !route) return '';
       if (pending.classroomId !== route.classroomId) return '';
+      console.log(`returnUrl:${pending.returnUrl}`)
       return pending.returnUrl || '';
     }
 
+    async autoSelect() {
+      // 进入ai - workspace的方式有两种：可以处理两种不同的逻辑，增加兼容性
+      const returnUrl = this.getReturnUrl()
+      // 1. 从传统的 v2 - pro / lms 的目录新开标签页进入（开始刷课）的
+      if (returnUrl) {
+        await this.returnToSource(returnUrl)
+      } else {
+        // 2. 直接从ai - workspac页面进入（开始刷课）的
+        this.panel.log("检测到是从ai - workspac页面点击开始刷课");
+        this.source = AiWorkspace.getAllScourse(); // 得到课程列表
+        this.activateIndex = Array.from(this.source).findIndex(el => el.firstChild.classList.contains("is-active")) // 现在正在刷第几个（从0开始）
+        await this.handleNext(this.activateIndex + 1)
+      }
+    }
+
+    // 获取父窗口对象 window.opener
     getSourceWindow() {
       try {
         if (!window.opener || window.opener.closed) return null;
@@ -1945,23 +1991,21 @@ ${ocrText}
       }
     }
 
-    async returnToSource() {
-      const returnUrl = this.getReturnUrl();
-      if (!returnUrl) return false;
+    async returnToSource(returnUrl) {
       this.panel.log('媒体播放完成，返回课程目录页继续匹配');
       await Utils.sleep(1200);
       const sourceWindow = this.getSourceWindow();
+      console.log(sourceWindow);
       if (sourceWindow) {
         try {
           sourceWindow.location.href = returnUrl;
           sourceWindow.focus();
           window.close();
           return true;
-        } catch (_) {
-          // ignore and fallback
+        } catch (e) {
+          console.error("跳转父窗口异常", e);
         }
       }
-
       // if (location.href !== returnUrl) {
       //   location.href = returnUrl;
       // } else {
@@ -2153,8 +2197,22 @@ ${ocrText}
       return true;
     }
 
-    async run() {
-      preventScreenCheck();
+    // 直接在ai-workspace页面处理课程的逻辑
+    async handleNext(count) {
+      if (count >= this.source.length) {
+        this.panel.log('课程刷完啦 🎉');
+        this.panel.resetStartButton('刷完啦~');
+        Store.clearPendingAutoStart();
+        return;
+      }
+      this.source[count].firstChild.click();
+      await Utils.sleep(2000);
+      await this.run(false)
+    }
+
+    async run(preventScreenCheckSwitch = true) {
+      // 仅开启一次防切屏
+      if (preventScreenCheckSwitch) preventScreenCheck();
       const route = AiWorkspace.getRoute();
       if (!route) {
         this.panel.log('当前页面已离开 ai-workspace/lms-graph');
@@ -2174,8 +2232,9 @@ ${ocrText}
         await Utils.sleep(2000);
         ok = true;
       }
-      if (!ok) return;
-      await this.returnToSource();
+      if (!ok) this.panel.warn("(该视频可能已经刷完了)，即将跳过开始下一个");
+      // 继续下一个
+      await this.autoSelect()
     }
   }
 
@@ -2183,7 +2242,7 @@ ${ocrText}
   function start() {
     // ---- ai-workspace获取课程根目录信息并保存（处理完一个课程重定向到根目录） ----
     const classroomId = Utils.getCurrentClassroomId();
-    const returnUrl = location.pathname.includes('/v2/web/studentLog/') ? location.href : '';
+    const returnUrl = Utils.returnUrl()
     Store.setPendingAutoStart(classroomId, returnUrl);
     const aiRoute = AiWorkspace.getRoute();
     if (aiRoute) {
